@@ -59,8 +59,12 @@ class AiService {
   bool _useSystemPrompt = true;
   final List<Map<String, String>> _conversationHistory = [];
 
+  /// Extra instructions for the current Zax mode (Study / Programming).
+  /// Only added to normal chat replies, never to phone-control (agent) prompts.
+  String modeInstruction = '';
+
   static const String _systemPrompt = '''
-You are PrivateAgent, a helpful AI assistant that controls an Android phone. You can perform device actions and also have normal conversations.
+You are Zax, a helpful AI assistant that controls an Android phone. You can perform device actions and also have normal conversations.
 
 When the user wants to perform a device action, you MUST respond with ONLY a JSON object (no markdown, no code fences, no extra text) in this exact format:
 {"action": "action_name", "params": {"key": "value"}, "response": "What you say to the user"}
@@ -100,7 +104,7 @@ For normal conversation (questions, chat, info requests), just respond with plai
 ''';
 
   static const String _chatSystemPrompt = '''
-You are PrivateAgent, a helpful conversational AI assistant. 
+You are Zax, a helpful conversational AI assistant. 
 Provide direct, natural, and friendly text responses. You cannot perform device actions or run tools. 
 Answer questions, explain concepts, brainstorm, write emails/messages, and chat with the user in plain text or markdown format.
 ''';
@@ -223,7 +227,11 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
     try {
       // Build the prompt including system instructions
-      final systemPrompt = isAgentMode ? _systemPrompt : _chatSystemPrompt;
+      final systemPrompt = isAgentMode
+          ? _systemPrompt
+          : (modeInstruction.isEmpty
+                ? _chatSystemPrompt
+                : '$_chatSystemPrompt\n$modeInstruction');
       final messages = [
         if (_useSystemPrompt) {'role': 'system', 'content': systemPrompt},
         ..._conversationHistory,
@@ -259,7 +267,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
               'Content-Type': 'application/json',
               'Authorization': 'Bearer $_apiKey',
               'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
-              'X-Title': 'PrivateAgent',
+              'X-Title': 'Zax',
             },
             body: requestBody,
           )
@@ -335,7 +343,11 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     }
 
     try {
-      final systemPrompt = isAgentMode ? _systemPrompt : _chatSystemPrompt;
+      final systemPrompt = isAgentMode
+          ? _systemPrompt
+          : (modeInstruction.isEmpty
+                ? _chatSystemPrompt
+                : '$_chatSystemPrompt\n$modeInstruction');
       final messages = [
         if (_useSystemPrompt) {'role': 'system', 'content': systemPrompt},
         ..._conversationHistory,
@@ -358,7 +370,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $_apiKey',
         'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
-        'X-Title': 'PrivateAgent',
+        'X-Title': 'Zax',
       });
 
       request.body = jsonEncode({
@@ -501,7 +513,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer $_apiKey',
                 'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
-                'X-Title': 'PrivateAgent',
+                'X-Title': 'Zax',
               },
               body: jsonEncode({
                 'model': _model,
