@@ -80,7 +80,7 @@ class PrivateAgentApp extends StatelessWidget {
       valueListenable: themeNotifier,
       builder: (context, ThemeMode currentMode, child) {
         return MaterialApp(
-          title: 'PrivateAgent',
+          title: 'Zax',
           debugShowCheckedModeBanner: false,
           themeMode: currentMode,
           theme: ThemeData(
