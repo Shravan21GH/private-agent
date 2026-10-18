@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/chat_message.dart';
 import '../services/ai_service.dart';
 import '../services/action_handler.dart';
@@ -16,6 +17,8 @@ import 'task_history_screen.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import '../main.dart';
 import '../config/feature_flags.dart';
+import '../config/zax_mode.dart';
+import '../widgets/zax_core.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -39,6 +42,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // Custom switch state: 'chat' or 'agent'
   String _mode = 'chat';
+
+  // Zax mode: normal (gold), study (green), image (blue), programming (red)
+  ZaxMode _zaxMode = ZaxMode.normal;
 
   // Chat Session state tracking
   String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -96,6 +102,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
+
+    // Tell the AI which Zax mode is active (only affects normal chat replies)
+    _aiService.modeInstruction = _zaxMode.instruction;
+
+    // Image mode: make a picture instead of asking the AI for text
+    if (_zaxMode == ZaxMode.image && _mode == 'chat') {
+      await _generateImage(text.trim());
+      return;
+    }
 
     final userMessage = ChatMessage(role: 'user', content: text.trim());
     setState(() {
@@ -207,7 +222,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await _saveSession();
       } else {
         // Plain text response, we already rendered it, just speak it
-        _voiceService.speak(accumulated);
+        if (_zaxMode != ZaxMode.programming) {
+          _voiceService.speak(accumulated);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -232,6 +249,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _updateOverlayState();
       }
     }
+  }
+
+  Future<void> _generateImage(String prompt) async {
+    final seed = DateTime.now().millisecondsSinceEpoch % 100000;
+    final encoded = Uri.encodeComponent(
+      prompt,
+    ).replaceAll('(', '%28').replaceAll(')', '%29');
+    final url =
+        'https://image.pollinations.ai/prompt/$encoded?width=768&height=768&nologo=true&seed=$seed';
+    setState(() {
+      _messages.add(ChatMessage(role: 'user', content: prompt));
+      _messages.add(
+        ChatMessage(
+          role: 'assistant',
+          content: '🎨 Creating your image... (it can take a few seconds)\n\n![image]($url)',
+        ),
+      );
+    });
+    _textController.clear();
+    _scrollToBottom();
+    await _saveSession();
   }
 
   Future<void> _showTaskProgressOverlay(String message) async {
@@ -476,33 +514,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    // Zax always uses the dark HUD look
+    const isDark = true;
 
-    return Scaffold(
-      backgroundColor: isDark
-          ? const Color(0xFF0C0A15)
-          : const Color(0xFFFFFFFF),
+    return Theme(
+      data: _hudTheme(context),
+      child: Scaffold(
+      backgroundColor: const Color(0xFF04070B),
       appBar: AppBar(
         title: RichText(
           text: TextSpan(
-            style: TextStyle(
-              fontSize: 20,
-              color: isDark ? Colors.white : const Color(0xFF1E293B),
-            ),
+            style: const TextStyle(fontSize: 20, color: Colors.white),
             children: [
               TextSpan(
-                text: 'Private',
+                text: 'ZAX',
                 style: TextStyle(
                   fontWeight: FontWeight.w900,
-                  color: Theme.of(context).colorScheme.primary,
-                  letterSpacing: -0.5,
+                  color: _zaxMode.color,
+                  letterSpacing: 4,
                 ),
               ),
-              const TextSpan(
-                text: 'Agent',
-                style: TextStyle(
+              TextSpan(
+                text: '  ${_zaxMode.label.toUpperCase()}',
+                style: const TextStyle(
                   fontWeight: FontWeight.w400,
-                  letterSpacing: -0.5,
+                  fontSize: 11,
+                  letterSpacing: 2,
+                  color: Colors.white54,
                 ),
               ),
             ],
@@ -559,7 +597,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
           Column(
             children: [
-              // Pill selector switcher
+              // Glowing Zax core + the 4 modes
+              _buildCore(),
+              _buildZaxModeChips(),
+
+              // Chat / Agent (phone control) switch
               _buildModeSelector(isDark),
 
               // API key warning banner
@@ -652,7 +694,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           valueColor: AlwaysStoppedAnimation<Color>(
-                            Colors.indigoAccent,
+                            Colors.white70,
                           ),
                         ),
                       ),
@@ -704,6 +746,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
+    ),
     );
   }
 
@@ -738,11 +781,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               children: [
                 Icon(
                   Icons.smart_toy_rounded,
-                  color: Theme.of(context).primaryColor,
+                  color: _zaxMode.color,
                   size: 26,
                 ),
                 const SizedBox(width: 12),
-                Text('PrivateAgent', style: headerStyle),
+                Text('ZAX', style: headerStyle.copyWith(letterSpacing: 4)),
               ],
             ),
           ),
@@ -753,13 +796,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: Container(
               width: double.infinity,
               decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
+                color: _zaxMode.color,
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: [
                   BoxShadow(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primary.withOpacity(0.2),
+                    color: _zaxMode.color.withOpacity(0.2),
                     blurRadius: 8,
                     offset: const Offset(0, 3),
                   ),
@@ -812,7 +853,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 style: TextStyle(
                   fontSize: 10,
                   fontWeight: FontWeight.w800,
-                  color: Theme.of(context).primaryColor,
+                  color: _zaxMode.color,
                   letterSpacing: 1.5,
                 ),
               ),
@@ -851,16 +892,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ),
                       decoration: BoxDecoration(
                         color: isCurrent
-                            ? Theme.of(
-                                context,
-                              ).colorScheme.primary.withOpacity(0.08)
+                            ? _zaxMode.color.withOpacity(0.08)
                             : Colors.transparent,
                         borderRadius: BorderRadius.circular(12),
                         border: isCurrent
                             ? Border.all(
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.primary.withOpacity(0.15),
+                                color: _zaxMode.color.withOpacity(0.15),
                               )
                             : null,
                       ),
@@ -874,7 +911,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           Icons.chat_bubble_outline_rounded,
                           size: 15,
                           color: isCurrent
-                              ? Theme.of(context).colorScheme.primary
+                              ? _zaxMode.color
                               : (isDark ? Colors.grey[600] : Colors.grey[500]),
                         ),
                         title: Text(
@@ -968,6 +1005,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildBackgroundGlows(bool isDark) {
+    final accent = _zaxMode.color;
     return Positioned.fill(
       child: Stack(
         children: [
@@ -980,14 +1018,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
-                  colors: [
-                    isDark
-                        ? const Color(0xFF6366F1).withOpacity(0.24)
-                        : const Color(0xFF4F46E5).withOpacity(0.12),
-                    isDark
-                        ? const Color(0xFF6366F1).withOpacity(0)
-                        : const Color(0xFF4F46E5).withOpacity(0),
-                  ],
+                  colors: [accent.withOpacity(0.22), accent.withOpacity(0)],
                 ),
               ),
             ),
@@ -1001,19 +1032,120 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
-                  colors: [
-                    isDark
-                        ? const Color(0xFF38BDF8).withOpacity(0.18)
-                        : const Color(0xFF0EA5E9).withOpacity(0.09),
-                    isDark
-                        ? const Color(0xFF38BDF8).withOpacity(0)
-                        : const Color(0xFF0EA5E9).withOpacity(0),
-                  ],
+                  colors: [accent.withOpacity(0.14), accent.withOpacity(0)],
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  ThemeData _hudTheme(BuildContext context) {
+    final accent = _zaxMode.color;
+    return Theme.of(context).copyWith(
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: const Color(0xFF04070B),
+      primaryColor: accent,
+      colorScheme: ColorScheme.dark(
+        primary: accent,
+        onPrimary: Colors.black,
+        secondary: accent,
+        surface: const Color(0xFF0E141B),
+        onSurface: Colors.white,
+        error: Colors.redAccent,
+      ),
+      appBarTheme: const AppBarTheme(
+        centerTitle: true,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        iconTheme: IconThemeData(color: Colors.white),
+        systemOverlayStyle: SystemUiOverlayStyle.light,
+      ),
+    );
+  }
+
+  /// The big glowing Zax core. It shrinks once a chat has started or while
+  /// the keyboard is open, so it never gets in the way.
+  Widget _buildCore() {
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+    final compact = _messages.isNotEmpty || keyboardOpen;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOut,
+      height: compact ? 96 : 230,
+      child: Center(
+        child: ZaxCore(
+          color: _zaxMode.color,
+          active: _isLoading || _isListening,
+        ),
+      ),
+    );
+  }
+
+  /// The 4 mode buttons: Normal, Study, Image, Code.
+  Widget _buildZaxModeChips() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: Row(
+        children: ZaxMode.values.map((m) {
+          final selected = m == _zaxMode;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                setState(() => _zaxMode = m);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 300),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  color: selected
+                      ? m.color.withOpacity(0.18)
+                      : Colors.white.withOpacity(0.04),
+                  border: Border.all(
+                    color: selected
+                        ? m.color
+                        : Colors.white.withOpacity(0.10),
+                    width: selected ? 1.4 : 1,
+                  ),
+                  boxShadow: selected
+                      ? [
+                          BoxShadow(
+                            color: m.color.withOpacity(0.35),
+                            blurRadius: 12,
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      m.icon,
+                      size: 18,
+                      color: selected ? m.color : Colors.white54,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      m.label,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: selected ? m.color : Colors.white54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }).toList(),
       ),
     );
   }
@@ -1029,7 +1161,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           color: activeBg,
           borderRadius: BorderRadius.circular(30),
           border: Border.all(
-            color: Theme.of(context).colorScheme.onSurface.withOpacity(0.06),
+            color: Colors.white.withOpacity(0.06),
           ),
         ),
         child: Row(
@@ -1073,14 +1205,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(26),
           color: isSelected
-              ? Theme.of(context).colorScheme.primary
+              ? _zaxMode.color
               : Colors.transparent,
           boxShadow: isSelected
               ? [
                   BoxShadow(
-                    color: Theme.of(
-                      context,
-                    ).colorScheme.primary.withOpacity(0.20),
+                    color: _zaxMode.color.withOpacity(0.20),
                     blurRadius: 10,
                     offset: const Offset(0, 4),
                   ),
@@ -1131,12 +1261,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     final suggestions = _mode == 'chat'
-        ? [
-            'Write a professional email',
-            'Explain quantum computing simply',
-            'Brainstorm mobile app ideas',
-            'Write a poem about robots',
-          ]
+        ? _zaxMode.suggestions
         : [
             'Open YouTube and search for cats',
             'Call Mom',
@@ -1170,11 +1295,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'How can I help you?',
+                    _zaxMode.tagline,
                     style: TextStyle(
                       fontSize: 30,
                       fontWeight: FontWeight.w600,
-                      color: Theme.of(context).colorScheme.primary,
+                      color: _zaxMode.color,
                       letterSpacing: -1.5,
                       height: 1.2,
                     ),
@@ -1274,11 +1399,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               shape: BoxShape.circle,
               color: _isListening
                   ? Colors.redAccent
-                  : Theme.of(context).cardTheme.color,
+                  : const Color(0xFF0E141B),
               border: Border.all(
                 color: _isListening
                     ? Colors.redAccent
-                    : Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
+                    : Colors.white.withOpacity(0.08),
                 width: 1.2,
               ),
               boxShadow: [
@@ -1300,7 +1425,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 _isListening ? Icons.mic_rounded : Icons.mic_none_rounded,
                 color: _isListening
                     ? Colors.white
-                    : Theme.of(context).colorScheme.primary,
+                    : _zaxMode.color,
               ),
               onPressed: _isLoading ? null : _toggleVoice,
             ),
@@ -1311,12 +1436,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           Expanded(
             child: Container(
               decoration: BoxDecoration(
-                color: Theme.of(context).cardTheme.color,
+                color: const Color(0xFF0E141B),
                 borderRadius: BorderRadius.circular(24),
                 border: Border.all(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withOpacity(0.08),
+                  color: Colors.white.withOpacity(0.08),
                   width: 1.2,
                 ),
                 boxShadow: [
@@ -1336,7 +1459,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       decoration: InputDecoration(
                         hintText: _isListening
                             ? 'Listening...'
-                            : 'Type a command...',
+                            : _zaxMode.hint,
                         hintStyle: TextStyle(
                           fontSize: 13,
                           color: isDark ? Colors.grey[600] : Colors.grey[400],
@@ -1359,7 +1482,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     margin: const EdgeInsets.only(right: 6),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Theme.of(context).colorScheme.primary,
+                      color: _zaxMode.color,
                     ),
                     child: IconButton(
                       icon: const Icon(
