@@ -126,7 +126,7 @@ Rules:
       await ScreenAutomationService.logToNative(
         "[TaskExecutor] Accessibility service not running, returning early.",
       );
-      return 'Accessibility service is not enabled. Go to Settings \u2192 Accessibility \u2192 PrivateAgent Screen Control and enable it.';
+      return 'Accessibility service is not enabled. Go to Settings \u2192 Accessibility \u2192 Zax Screen Control and enable it.';
     }
 
     final results = <String>[];
