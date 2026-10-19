@@ -2,12 +2,30 @@ import 'dart:convert';
 import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/zax_identity.dart';
 import '../models/agent_action.dart';
+import 'memory_store.dart';
 
 class AiResponse {
   final String content;
   final int totalTokens;
   AiResponse(this.content, this.totalTokens);
+}
+
+/// Provider settings for one Zax mode (for example Study or Programming).
+/// A mode that has its own settings uses them for its chat replies.
+class ModeProvider {
+  final String apiKey;
+  final String baseUrl;
+  final String model;
+  const ModeProvider({
+    required this.apiKey,
+    required this.baseUrl,
+    required this.model,
+  });
+
+  bool get isConfigured =>
+      apiKey.isNotEmpty && baseUrl.isNotEmpty && model.isNotEmpty;
 }
 
 class AiService {
@@ -62,6 +80,24 @@ class AiService {
   /// Extra instructions for the current Zax mode (Study / Programming).
   /// Only added to normal chat replies, never to phone-control (agent) prompts.
   String modeInstruction = '';
+
+  /// The active Zax mode: 'normal', 'study', 'programming' or 'image'.
+  /// Set by the home screen before each message.
+  String activeMode = 'normal';
+
+  /// Modes that can have their own provider. Image mode uses Pollinations
+  /// and has no AI chat provider.
+  static const List<String> providerModes = ['normal', 'study', 'programming'];
+
+  final Map<String, ModeProvider> _modeProviders = {};
+
+  /// The provider to use for the current mode's chat replies, or null to use
+  /// the main provider. There is never an automatic switch to another
+  /// provider when a request fails: the real error is shown instead.
+  ModeProvider? get _activeOverride {
+    final provider = _modeProviders[activeMode];
+    return (provider != null && provider.isConfigured) ? provider : null;
+  }
 
   static const String _systemPrompt = '''
 You are Zax, a helpful AI assistant that controls an Android phone. You can perform device actions and also have normal conversations.
@@ -120,6 +156,47 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     _maxTokens = prefs.getInt('api_max_tokens') ?? 1024;
     _useScreenCompression = prefs.getBool('api_use_screen_compression') ?? true;
     _useSystemPrompt = prefs.getBool('api_use_system_prompt') ?? true;
+    for (final mode in providerModes) {
+      final key = prefs.getString('mode_${mode}_api_key') ?? '';
+      final url = prefs.getString('mode_${mode}_base_url') ?? '';
+      final model = prefs.getString('mode_${mode}_model') ?? '';
+      if (key.isNotEmpty || url.isNotEmpty || model.isNotEmpty) {
+        _modeProviders[mode] =
+            ModeProvider(apiKey: key, baseUrl: url, model: model);
+      }
+    }
+  }
+
+  ModeProvider? modeProviderFor(String mode) => _modeProviders[mode];
+
+  Future<void> saveModeProvider(
+    String mode, {
+    required String apiKey,
+    required String baseUrl,
+    required String model,
+  }) async {
+    var key = apiKey.trim();
+    if (key.toLowerCase().startsWith('bearer ')) {
+      key = key.substring(7).trim();
+    }
+    final provider = ModeProvider(
+      apiKey: key,
+      baseUrl: baseUrl.trim(),
+      model: model.trim(),
+    );
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('mode_${mode}_api_key', provider.apiKey);
+    await prefs.setString('mode_${mode}_base_url', provider.baseUrl);
+    await prefs.setString('mode_${mode}_model', provider.model);
+    _modeProviders[mode] = provider;
+  }
+
+  Future<void> clearModeProvider(String mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('mode_${mode}_api_key');
+    await prefs.remove('mode_${mode}_base_url');
+    await prefs.remove('mode_${mode}_model');
+    _modeProviders.remove(mode);
   }
 
   Future<void> saveSettings({
@@ -181,7 +258,11 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   String get baseUrl => _baseUrl;
   String get model => _model;
   String get apiKey => _apiKey ?? '';
-  int get maxSteps => _disableMaxSteps ? 999 : _maxSteps;
+  /// The agent can never run more steps than this, whatever the settings say.
+  static const int hardMaxSteps = 25;
+
+  int get maxSteps =>
+      (_disableMaxSteps ? hardMaxSteps : _maxSteps).clamp(1, hardMaxSteps).toInt();
   int get rawMaxSteps => _maxSteps; // For the slider UI
   bool get disableMaxSteps => _disableMaxSteps;
   double get temperature => _temperature;
@@ -189,11 +270,13 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
   bool get useScreenCompression => _useScreenCompression;
   bool get useSystemPrompt => _useSystemPrompt;
 
-  int get _effectiveMaxTokens {
+  int get _effectiveMaxTokens => _maxTokensFor(_baseUrl, _model);
+
+  int _maxTokensFor(String baseUrl, String model) {
     // GLM is a reasoning model. With the app's 1,024-token default it can
     // consume the whole budget reasoning and finish without visible content.
-    if (isNvidiaBaseUrl(_baseUrl) &&
-        _model == nvidiaDefaultModel &&
+    if (isNvidiaBaseUrl(baseUrl) &&
+        model == nvidiaDefaultModel &&
         _maxTokens < 4096) {
       return 4096;
     }
@@ -213,7 +296,13 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
 
   /// Send a message to the AI and get a response.
   Future<String> sendMessage(String message, {bool isAgentMode = true}) async {
-    if (_apiKey == null || _apiKey!.isEmpty) {
+    // Chat replies use the active mode's own provider if it has one.
+    // Phone-control (agent) tasks always use the main provider.
+    final modeProvider = isAgentMode ? null : _activeOverride;
+    final apiKey = modeProvider?.apiKey ?? _apiKey;
+    final baseUrl = modeProvider?.baseUrl ?? _baseUrl;
+    final model = modeProvider?.model ?? _model;
+    if (apiKey == null || apiKey.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
 
@@ -232,12 +321,19 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
           : (modeInstruction.isEmpty
                 ? _chatSystemPrompt
                 : '$_chatSystemPrompt\n$modeInstruction');
+      var fullSystemPrompt = '${ZaxIdentity.statement}\n$systemPrompt';
+      if (!isAgentMode) {
+        final remembered = await MemoryStore.instance.contextFor(message);
+        if (remembered.isNotEmpty) {
+          fullSystemPrompt = '$fullSystemPrompt\n\n$remembered';
+        }
+      }
       final messages = [
-        if (_useSystemPrompt) {'role': 'system', 'content': systemPrompt},
+        if (_useSystemPrompt) {'role': 'system', 'content': fullSystemPrompt},
         ..._conversationHistory,
       ];
 
-      String requestUrl = _baseUrl;
+      String requestUrl = baseUrl;
       if (requestUrl.endsWith('/chat/completions')) {
         requestUrl = requestUrl; // User already included it
       } else {
@@ -249,23 +345,22 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
       }
 
       final requestBody = jsonEncode({
-        'model': _model,
+        'model': model,
         'messages': messages,
         'temperature': _temperature,
-        'max_tokens': _effectiveMaxTokens,
+        'max_tokens': _maxTokensFor(baseUrl, model),
       });
 
-      developer.log(
-        'API Request: $requestUrl\n$requestBody',
-        name: 'AiService',
-      );
+      // Privacy: only the address and model are logged, never the conversation
+      // or the API key.
+      developer.log('API request to $requestUrl (model: $model)', name: 'AiService');
 
       final response = await http
           .post(
             Uri.parse(requestUrl),
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': 'Bearer $_apiKey',
+              'Authorization': 'Bearer $apiKey',
               'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
               'X-Title': 'Zax',
             },
@@ -273,10 +368,7 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
           )
           .timeout(const Duration(minutes: 30));
 
-      developer.log(
-        'API Response [${response.statusCode}]: ${response.body}',
-        name: 'AiService',
-      );
+      developer.log('API response status: ${response.statusCode}', name: 'AiService');
 
       if (response.statusCode != 200) {
         String errorMessage = response.body;
@@ -332,7 +424,13 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
     String message, {
     bool isAgentMode = true,
   }) async* {
-    if (_apiKey == null || _apiKey!.isEmpty) {
+    // Chat replies use the active mode's own provider if it has one.
+    // Phone-control (agent) tasks always use the main provider.
+    final modeProvider = isAgentMode ? null : _activeOverride;
+    final apiKey = modeProvider?.apiKey ?? _apiKey;
+    final baseUrl = modeProvider?.baseUrl ?? _baseUrl;
+    final model = modeProvider?.model ?? _model;
+    if (apiKey == null || apiKey.isEmpty) {
       throw Exception('API Key is not configured. Please go to Settings.');
     }
 
@@ -348,12 +446,19 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
           : (modeInstruction.isEmpty
                 ? _chatSystemPrompt
                 : '$_chatSystemPrompt\n$modeInstruction');
+      var fullSystemPrompt = '${ZaxIdentity.statement}\n$systemPrompt';
+      if (!isAgentMode) {
+        final remembered = await MemoryStore.instance.contextFor(message);
+        if (remembered.isNotEmpty) {
+          fullSystemPrompt = '$fullSystemPrompt\n\n$remembered';
+        }
+      }
       final messages = [
-        if (_useSystemPrompt) {'role': 'system', 'content': systemPrompt},
+        if (_useSystemPrompt) {'role': 'system', 'content': fullSystemPrompt},
         ..._conversationHistory,
       ];
 
-      String requestUrl = _baseUrl;
+      String requestUrl = baseUrl;
       if (requestUrl.endsWith('/chat/completions')) {
         requestUrl = requestUrl;
       } else {
@@ -368,16 +473,16 @@ Answer questions, explain concepts, brainstorm, write emails/messages, and chat 
       final request = http.Request('POST', Uri.parse(requestUrl));
       request.headers.addAll({
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer $_apiKey',
+        'Authorization': 'Bearer $apiKey',
         'HTTP-Referer': 'https://github.com/orailnoor/private-agent',
         'X-Title': 'Zax',
       });
 
       request.body = jsonEncode({
-        'model': _model,
+        'model': model,
         'messages': messages,
         'temperature': _temperature,
-        'max_tokens': _effectiveMaxTokens,
+        'max_tokens': _maxTokensFor(baseUrl, model),
         'stream': true,
       });
 
