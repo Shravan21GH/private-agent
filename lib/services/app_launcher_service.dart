@@ -5,28 +5,27 @@ import 'package:url_launcher/url_launcher.dart';
 class AppLauncherService {
   List<AppInfo>? _cachedApps;
 
-  /// Load installed apps in the background.
-  /// Errors are caught so startup does not crash.
-  Future<void> warmUp() async {
-    try {
-      await getInstalledApps();
-    } catch (_) {
-      // Apps can still be loaded again when requested.
-    }
-  }
-
-  /// Get installed apps, using the cache when available.
+  /// Get all installed apps (cached), including system apps.
   Future<List<AppInfo>> getInstalledApps() async {
     _cachedApps ??= await InstalledApps.getInstalledApps(false, false);
     return _cachedApps!;
   }
 
-  /// Clear the installed-app cache.
+  /// Preload installed apps in the background.
+  Future<void> warmUp() async {
+    try {
+      await getInstalledApps();
+    } catch (_) {
+      // App discovery can be retried when needed.
+    }
+  }
+
+  /// Clear app cache.
   void clearCache() {
     _cachedApps = null;
   }
 
-  /// Find installed apps matching a query.
+  /// Find apps matching a query.
   Future<List<AppInfo>> searchApps(String query) async {
     final apps = await getInstalledApps();
     final lowerQuery = query.trim().toLowerCase();
@@ -36,52 +35,53 @@ class AppLauncherService {
     }).toList();
   }
 
-  /// Open an app by name, preferring an exact match.
+  /// Open an app by name (fuzzy match).
   Future<String> openApp(String appName) async {
-    final query = appName.trim();
+    final cleanedName = appName.trim();
 
-    if (query.isEmpty) {
-      return 'Please specify which app to open.';
+    if (cleanedName.isEmpty) {
+      return 'Which app should I open?';
     }
 
+    final matches = await searchApps(cleanedName);
+
+    if (matches.isEmpty) {
+      return 'Could not find app "$cleanedName". Try being more specific.';
+    }
+
+    // Try exact match first.
+    AppInfo? target;
+
+    for (final app in matches) {
+      if (app.name.toLowerCase() == cleanedName.toLowerCase()) {
+        target = app;
+        break;
+      }
+    }
+
+    target ??= matches.first;
+
     try {
-      final matches = await searchApps(query);
-
-      if (matches.isEmpty) {
-        return 'Could not find app "$query". Try another name.';
-      }
-
-      AppInfo? target;
-
-      for (final app in matches) {
-        if (app.name.toLowerCase() == query.toLowerCase()) {
-          target = app;
-          break;
-        }
-      }
-
-      target ??= matches.first;
-
       await InstalledApps.startApp(target.packageName);
       return 'Opened ${target.name}';
     } catch (e) {
-      return 'Could not open "$query": $e';
+      return 'Error opening ${target.name}: $e';
     }
   }
 
-  /// Open an app by its exact Android package name.
+  /// Open an app by exact package name.
   Future<String> openPackage(String packageName) async {
-    final query = packageName.trim();
+    final cleanedPackage = packageName.trim();
 
-    if (query.isEmpty) {
+    if (cleanedPackage.isEmpty) {
       return 'No app package was provided.';
     }
 
     try {
-      await InstalledApps.startApp(query);
-      return 'Launched $query';
+      await InstalledApps.startApp(cleanedPackage);
+      return 'Launched $cleanedPackage';
     } catch (e) {
-      return 'Error launching $query: $e';
+      return 'Error launching $cleanedPackage: $e';
     }
   }
 
@@ -90,13 +90,13 @@ class AppLauncherService {
     final searchQuery = query.trim();
 
     if (searchQuery.isEmpty) {
-      return 'Please specify what to search for on Google Play.';
+      return 'What app should I search for?';
     }
 
     final uri = Uri.https(
       'play.google.com',
       '/store/search',
-      <String, String>{
+      {
         'q': searchQuery,
         'c': 'apps',
       },
@@ -105,29 +105,27 @@ class AppLauncherService {
     return openUrl(uri.toString());
   }
 
-  /// Open an HTTP or HTTPS URL externally.
+  /// Open a URL in an external application.
   Future<String> openUrl(String url) async {
     try {
-      final uri = Uri.parse(url);
+      final uri = Uri.parse(url.trim());
 
       if (uri.scheme != 'http' && uri.scheme != 'https') {
-        return 'Only HTTP and HTTPS links are supported.';
+        return 'Only HTTP and HTTPS links can be opened.';
       }
 
-      if (uri.host.isEmpty) {
-        return 'The web address is invalid.';
+      if (await canLaunchUrl(uri)) {
+        final opened = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+
+        if (opened) {
+          return 'Opened $url';
+        }
       }
 
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-
-      if (launched) {
-        return 'Opened $url';
-      }
-
-      return 'Could not open $url';
+      return 'Cannot open $url';
     } catch (e) {
       return 'Error opening URL: $e';
     }
