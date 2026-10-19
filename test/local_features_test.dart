@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:private_agent/services/local_commands.dart';
 import 'package:private_agent/services/memory_store.dart';
-import 'package:private_agent/services/quick_commands.dart';
+import 'package:private_agent/services/instant_commands.dart'; // Fixed import path
 import 'package:private_agent/services/task_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -44,6 +44,7 @@ void main() {
   });
 
   group('QuickCommand', () {
+    // If your internal class was renamed alongside the file, replace 'QuickCommand' with 'InstantCommand'
     test('open app', () {
       final c = QuickCommand.parse('open WhatsApp');
       expect(c?.type, QuickCommandType.openApp);
