@@ -19,28 +19,25 @@ class ActionHandler {
   final AlarmService _alarm = AlarmService();
   final SystemControlService _systemControl = SystemControlService();
   final ShizukuService _shizuku = ShizukuService();
-  final ScreenAutomationService _screenAutomation = ScreenAutomationService();
+  final ScreenAutomationService _screenAutomation =
+      ScreenAutomationService();
 
   ActionHandler() {
-    // Load the installed-app list in the background so the first
-    // "open app" command is fast.
+    // Load installed apps in the background.
     _appLauncher.warmUp();
   }
 
   final LocalCommands _local = LocalCommands();
 
-  /// Set by the home screen. Shows a Confirm / Cancel dialog and returns true
-  /// only if the user taps Confirm. If nothing is set, consequential actions
-  /// (calls, texts, emails, device commands) are refused.
+  /// Shows a confirmation dialog before consequential actions.
   Future<bool> Function(String title, String message)? confirmAction;
 
   ShizukuService get shizuku => _shizuku;
   ScreenAutomationService get screenAutomation => _screenAutomation;
 
-  /// The currently running task executor, if any
   TaskExecutor? _currentExecutor;
 
-  /// Execute an action and return the result
+  /// Execute an action and return the result.
   Future<AgentActionResult> execute(
     AgentAction action, {
     AiService? aiService,
@@ -48,6 +45,7 @@ class ActionHandler {
   }) async {
     try {
       final problem = _validate(action);
+
       if (problem != null) {
         return AgentActionResult(
           actionType: action.action,
@@ -57,14 +55,18 @@ class ActionHandler {
       }
 
       final question = _confirmationQuestion(action);
+
       if (question != null) {
         final ask = confirmAction;
-        final approved = ask != null && await ask('Please confirm', question);
+        final approved =
+            ask != null && await ask('Please confirm', question);
+
         if (!approved) {
           return AgentActionResult(
             actionType: action.action,
             success: false,
-            details: 'Cancelled: this action was not confirmed, so it was not done.',
+            details:
+                'Cancelled: this action was not confirmed, so it was not done.',
           );
         }
       }
@@ -79,8 +81,9 @@ class ActionHandler {
           break;
 
         case 'launch_package':
-          final packageName = action.params['package_name'] as String? ?? '';
-          result = await _appLauncher.openPackage(packageName);
+          result = await _appLauncher.openPackage(
+            action.params['package_name'] as String? ?? '',
+          );
           break;
 
         case 'make_call':
@@ -114,7 +117,8 @@ class ActionHandler {
 
         case 'set_timer':
           result = await _alarm.setTimer(
-            seconds: (action.params['seconds'] as num?)?.toInt() ?? 60,
+            seconds:
+                (action.params['seconds'] as num?)?.toInt() ?? 60,
             label: action.params['label'] as String?,
           );
           break;
@@ -147,11 +151,12 @@ class ActionHandler {
 
         case 'open_url':
           result = await _appLauncher.openUrl(
-            _normalizeUrl(action.params['url'] as String? ?? '') ?? '',
+            _normalizeUrl(
+                  action.params['url'] as String? ?? '',
+                ) ??
+                '',
           );
           break;
-
-        // ─── Screen Automation Actions ────────────────────────
 
         case 'read_screen':
           result = await _screenAutomation.getScreenDescription();
@@ -160,20 +165,29 @@ class ActionHandler {
         case 'click_element':
           final text = action.params['text'] as String? ?? '';
           final success = await _screenAutomation.clickByText(text);
-          result = success ? 'Clicked "$text"' : 'Could not find "$text" to click';
+          result = success
+              ? 'Clicked "$text"'
+              : 'Could not find "$text" to click';
           break;
 
         case 'type_on_screen':
           final text = action.params['text'] as String? ?? '';
           final hint = action.params['field_hint'] as String?;
-          final success = await _screenAutomation.typeText(text, fieldHint: hint);
-          result = success ? 'Typed "$text"' : 'Could not type into field';
+          final success = await _screenAutomation.typeText(
+            text,
+            fieldHint: hint,
+          );
+          result =
+              success ? 'Typed "$text"' : 'Could not type into field';
           break;
 
         case 'scroll_screen':
-          final direction = action.params['direction'] as String? ?? 'down';
+          final direction =
+              action.params['direction'] as String? ?? 'down';
           final success = await _screenAutomation.scroll(direction);
-          result = success ? 'Scrolled $direction' : 'Could not scroll';
+          result = success
+              ? 'Scrolled $direction'
+              : 'Could not scroll';
           break;
 
         case 'press_back':
@@ -181,14 +195,15 @@ class ActionHandler {
           result = success ? 'Pressed back' : 'Could not press back';
           break;
 
-        // ─── Multi-Step Task Execution ────────────────────────
-
         case 'execute_task':
-          final goal = action.params['goal'] as String? ?? action.response;
+          final goal =
+              action.params['goal'] as String? ?? action.response;
+
           if (aiService == null) {
             result = 'AI service not available for task execution.';
             break;
           }
+
           _currentExecutor = TaskExecutor(
             aiService: aiService,
             screenService: _screenAutomation,
@@ -196,6 +211,7 @@ class ActionHandler {
             shizukuService: _shizuku,
             onProgress: onProgress,
           );
+
           result = await _currentExecutor!.executeTask(goal);
           _currentExecutor = null;
           break;
@@ -218,10 +234,10 @@ class ActionHandler {
     }
   }
 
-  /// Checks that an action has the information it needs. Returns a message
-  /// describing the problem, or null if the action is fine.
+  /// Validate an action before execution.
   String? _validate(AgentAction action) {
     final p = action.params;
+
     String text(String key) {
       final value = p[key];
       return value is String ? value.trim() : '';
@@ -234,26 +250,42 @@ class ActionHandler {
 
     switch (action.action) {
       case 'open_app':
-        return text('app_name').isEmpty ? 'Which app should I open?' : null;
+        return text('app_name').isEmpty
+            ? 'Which app should I open?'
+            : null;
+
       case 'launch_package':
-        return text('package_name').isEmpty ? 'No app package was given.' : null;
+        return text('package_name').isEmpty
+            ? 'No app package was given.'
+            : null;
+
       case 'make_call':
-        if (text('contact_name').isEmpty && text('phone_number').isEmpty) {
+        if (text('contact_name').isEmpty &&
+            text('phone_number').isEmpty) {
           return 'Who should I call?';
         }
         return null;
+
       case 'send_sms':
-        if (text('contact_name').isEmpty && text('phone_number').isEmpty) {
+        if (text('contact_name').isEmpty &&
+            text('phone_number').isEmpty) {
           return 'Who should I text?';
         }
-        if (text('message').isEmpty) return 'What should the message say?';
+        if (text('message').isEmpty) {
+          return 'What should the message say?';
+        }
         return null;
+
       case 'send_email':
-        return text('to').isEmpty ? 'Who should the email go to?' : null;
+        return text('to').isEmpty
+            ? 'Who should the email go to?'
+            : null;
+
       case 'open_url':
         return _normalizeUrl(text('url')) == null
             ? 'That is not a valid web address.'
             : null;
+
       case 'set_volume':
       case 'set_brightness':
         final level = number('level');
@@ -261,30 +293,42 @@ class ActionHandler {
           return 'The level must be a number from 0 to 100.';
         }
         return null;
+
       case 'set_alarm':
         final hour = number('hour');
         final minute = number('minute');
-        if (hour == null || minute == null || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+
+        if (hour == null ||
+            minute == null ||
+            hour < 0 ||
+            hour > 23 ||
+            minute < 0 ||
+            minute > 59) {
           return 'An alarm needs an hour (0-23) and a minute (0-59).';
         }
         return null;
+
       case 'set_timer':
         final seconds = number('seconds');
         if (seconds == null || seconds < 1 || seconds > 86400) {
           return 'A timer must be between 1 second and 24 hours.';
         }
         return null;
+
       case 'run_adb_command':
-        return text('command').isEmpty ? 'No command was given.' : null;
+        return text('command').isEmpty
+            ? 'No command was given.'
+            : null;
+
       default:
         return null;
     }
   }
 
-  /// The question to ask the user before a consequential action, or null if
-  /// the action does not need confirmation.
+  /// Ask for confirmation before consequential actions.
   String? _confirmationQuestion(AgentAction action) {
     final p = action.params;
+
     String text(String key) {
       final value = p[key];
       return value is String ? value.trim() : '';
@@ -297,60 +341,76 @@ class ActionHandler {
     switch (action.action) {
       case 'make_call':
         return 'Call $who?';
+
       case 'send_sms':
         return 'Send this text message to $who?\n\n${text('message')}';
+
       case 'send_email':
         final subject = text('subject');
         return 'Send an email to ${text('to')}'
             '${subject.isEmpty ? '' : ' with the subject "$subject"'}?';
+
       case 'run_adb_command':
         return 'Run this device command?\n\n${text('command')}';
+
       default:
         return null;
     }
   }
 
-  /// Only http and https addresses are opened. A missing "https://" is added.
+  /// Normalize a web address. Only HTTP and HTTPS are allowed.
   String? _normalizeUrl(String raw) {
     var url = raw.trim();
+
     if (url.isEmpty || url.contains(' ')) return null;
     if (!url.contains('://')) url = 'https://$url';
+
     final uri = Uri.tryParse(url);
     if (uri == null) return null;
-    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
-    if (uri.host.isEmpty || !uri.host.contains('.')) return null;
+
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      return null;
+    }
+
+    if (uri.host.isEmpty || !uri.host.contains('.')) {
+      return null;
+    }
+
     return uri.toString();
   }
 
-  /// Runs simple commands ("open WhatsApp", "open Play Store and search X")
-  /// straight away, without asking the AI. Returns the result text, or null
-  /// if the command is not a simple one or did not work, so the AI can still
-  /// handle it the normal way.
+  /// Handle simple commands without involving the AI first.
   Future<String?> runQuickCommand(String text) async {
-    // Tasks, reminders and memory commands first.
     final local = await _local.handle(text);
     if (local != null) return local;
 
     final command = QuickCommand.parse(text);
-    if (command == null) return null;
 
     try {
       String result;
+
       switch (command.type) {
         case QuickCommandType.openApp:
           result = await _appLauncher.openApp(command.target);
           break;
+
         case QuickCommandType.playStoreSearch:
-          result = await _appLauncher.openPlayStoreSearch(command.target);
+          result = await _appLauncher.openPlayStoreSearch(
+            command.target,
+          );
           break;
+
+        case QuickCommandType.unknown:
+          return null;
       }
+
       return result.startsWith('Opened') ? result : null;
     } catch (_) {
       return null;
     }
   }
 
-  /// Cancel the currently running task
+  /// Cancel the currently running task.
   void cancelTask() {
     _currentExecutor?.cancel();
   }
