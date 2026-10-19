@@ -9,6 +9,8 @@ import 'shizuku_service.dart';
 import 'screen_automation_service.dart';
 import 'task_executor.dart';
 import 'ai_service.dart';
+import 'local_commands.dart';
+import 'quick_commands.dart';
 
 class ActionHandler {
   final AppLauncherService _appLauncher = AppLauncherService();
@@ -18,6 +20,19 @@ class ActionHandler {
   final SystemControlService _systemControl = SystemControlService();
   final ShizukuService _shizuku = ShizukuService();
   final ScreenAutomationService _screenAutomation = ScreenAutomationService();
+
+  ActionHandler() {
+    // Load the installed-app list in the background so the first
+    // "open app" command is fast.
+    _appLauncher.warmUp();
+  }
+
+  final LocalCommands _local = LocalCommands();
+
+  /// Set by the home screen. Shows a Confirm / Cancel dialog and returns true
+  /// only if the user taps Confirm. If nothing is set, consequential actions
+  /// (calls, texts, emails, device commands) are refused.
+  Future<bool> Function(String title, String message)? confirmAction;
 
   ShizukuService get shizuku => _shizuku;
   ScreenAutomationService get screenAutomation => _screenAutomation;
@@ -32,6 +47,28 @@ class ActionHandler {
     void Function(String)? onProgress,
   }) async {
     try {
+      final problem = _validate(action);
+      if (problem != null) {
+        return AgentActionResult(
+          actionType: action.action,
+          success: false,
+          details: problem,
+        );
+      }
+
+      final question = _confirmationQuestion(action);
+      if (question != null) {
+        final ask = confirmAction;
+        final approved = ask != null && await ask('Please confirm', question);
+        if (!approved) {
+          return AgentActionResult(
+            actionType: action.action,
+            success: false,
+            details: 'Cancelled: this action was not confirmed, so it was not done.',
+          );
+        }
+      }
+
       String result;
 
       switch (action.action) {
@@ -110,7 +147,7 @@ class ActionHandler {
 
         case 'open_url':
           result = await _appLauncher.openUrl(
-            action.params['url'] as String? ?? '',
+            _normalizeUrl(action.params['url'] as String? ?? '') ?? '',
           );
           break;
 
@@ -178,6 +215,138 @@ class ActionHandler {
         success: false,
         details: 'Error: $e',
       );
+    }
+  }
+
+  /// Checks that an action has the information it needs. Returns a message
+  /// describing the problem, or null if the action is fine.
+  String? _validate(AgentAction action) {
+    final p = action.params;
+    String text(String key) {
+      final value = p[key];
+      return value is String ? value.trim() : '';
+    }
+
+    num? number(String key) {
+      final value = p[key];
+      return value is num ? value : null;
+    }
+
+    switch (action.action) {
+      case 'open_app':
+        return text('app_name').isEmpty ? 'Which app should I open?' : null;
+      case 'launch_package':
+        return text('package_name').isEmpty ? 'No app package was given.' : null;
+      case 'make_call':
+        if (text('contact_name').isEmpty && text('phone_number').isEmpty) {
+          return 'Who should I call?';
+        }
+        return null;
+      case 'send_sms':
+        if (text('contact_name').isEmpty && text('phone_number').isEmpty) {
+          return 'Who should I text?';
+        }
+        if (text('message').isEmpty) return 'What should the message say?';
+        return null;
+      case 'send_email':
+        return text('to').isEmpty ? 'Who should the email go to?' : null;
+      case 'open_url':
+        return _normalizeUrl(text('url')) == null
+            ? 'That is not a valid web address.'
+            : null;
+      case 'set_volume':
+      case 'set_brightness':
+        final level = number('level');
+        if (level == null || level < 0 || level > 100) {
+          return 'The level must be a number from 0 to 100.';
+        }
+        return null;
+      case 'set_alarm':
+        final hour = number('hour');
+        final minute = number('minute');
+        if (hour == null || minute == null || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+          return 'An alarm needs an hour (0-23) and a minute (0-59).';
+        }
+        return null;
+      case 'set_timer':
+        final seconds = number('seconds');
+        if (seconds == null || seconds < 1 || seconds > 86400) {
+          return 'A timer must be between 1 second and 24 hours.';
+        }
+        return null;
+      case 'run_adb_command':
+        return text('command').isEmpty ? 'No command was given.' : null;
+      default:
+        return null;
+    }
+  }
+
+  /// The question to ask the user before a consequential action, or null if
+  /// the action does not need confirmation.
+  String? _confirmationQuestion(AgentAction action) {
+    final p = action.params;
+    String text(String key) {
+      final value = p[key];
+      return value is String ? value.trim() : '';
+    }
+
+    final who = text('contact_name').isNotEmpty
+        ? text('contact_name')
+        : text('phone_number');
+
+    switch (action.action) {
+      case 'make_call':
+        return 'Call $who?';
+      case 'send_sms':
+        return 'Send this text message to $who?\n\n${text('message')}';
+      case 'send_email':
+        final subject = text('subject');
+        return 'Send an email to ${text('to')}'
+            '${subject.isEmpty ? '' : ' with the subject "$subject"'}?';
+      case 'run_adb_command':
+        return 'Run this device command?\n\n${text('command')}';
+      default:
+        return null;
+    }
+  }
+
+  /// Only http and https addresses are opened. A missing "https://" is added.
+  String? _normalizeUrl(String raw) {
+    var url = raw.trim();
+    if (url.isEmpty || url.contains(' ')) return null;
+    if (!url.contains('://')) url = 'https://$url';
+    final uri = Uri.tryParse(url);
+    if (uri == null) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    if (uri.host.isEmpty || !uri.host.contains('.')) return null;
+    return uri.toString();
+  }
+
+  /// Runs simple commands ("open WhatsApp", "open Play Store and search X")
+  /// straight away, without asking the AI. Returns the result text, or null
+  /// if the command is not a simple one or did not work, so the AI can still
+  /// handle it the normal way.
+  Future<String?> runQuickCommand(String text) async {
+    // Tasks, reminders and memory commands first.
+    final local = await _local.handle(text);
+    if (local != null) return local;
+
+    final command = QuickCommand.parse(text);
+    if (command == null) return null;
+
+    try {
+      String result;
+      switch (command.type) {
+        case QuickCommandType.openApp:
+          result = await _appLauncher.openApp(command.target);
+          break;
+        case QuickCommandType.playStoreSearch:
+          result = await _appLauncher.openPlayStoreSearch(command.target);
+          break;
+      }
+      return result.startsWith('Opened') ? result : null;
+    } catch (_) {
+      return null;
     }
   }
 
