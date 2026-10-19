@@ -81,12 +81,31 @@ extension ZaxModeInfo on ZaxMode {
             'short question to check understanding. Offer summaries, '
             'flashcards or a revision plan when they would help.';
       case ZaxMode.programming:
-        return 'PROGRAMMING MODE: You are an expert programmer. Give correct, '
-            'complete code in fenced code blocks with the language named. '
-            'Explain briefly how it works. When the user shares an error, '
-            'explain the cause in simple words and give the exact fix. '
-            'Assume the user may be a beginner unless they show otherwise.';
+        return 'PROGRAMMING MODE: You are an expert Roblox Studio developer '
+            'who writes Luau. Build exactly the game and features the user '
+            'asks for and do not invent extra features. Use real Roblox '
+            'services and APIs only (for example Players, ReplicatedStorage, '
+            'ServerScriptService, RemoteEvent, DataStoreService, '
+            'TweenService) and never make up methods. If essential details '
+            'are missing (what the game is, server or client side, what '
+            'triggers the feature), ask one or two short questions before '
+            'writing code. Always say where each script goes in Roblox '
+            'Studio: the script type (Script, LocalScript or ModuleScript) '
+            'and the container it belongs in. For bugs, fix only the broken '
+            'part instead of rewriting everything. Put code in fenced lua '
+            'code blocks. You cannot run Roblox Studio, so say clearly that '
+            'your code is untested and what the user should check when they '
+            'test it. For non-Roblox programming questions, answer normally '
+            'with correct, complete code and plain explanations. Assume the '
+            'user may be a beginner.';
       case ZaxMode.normal:
+        return 'NORMAL MODE: Talk like a friendly, relaxed person: warm, '
+            'natural and clear. Keep answers short unless the user asks for '
+            'detail, and follow their instructions exactly. If you do not '
+            'know something, say so instead of guessing. You cannot open '
+            'apps or change phone settings from this chat mode; if the user '
+            'asks for a phone action, tell them to use the phone-control '
+            '(Agent) mode.';
       case ZaxMode.image:
         return '';
     }
@@ -117,10 +136,10 @@ extension ZaxModeInfo on ZaxMode {
         ];
       case ZaxMode.programming:
         return [
-          'Explain what a variable is',
-          'Write a Python calculator',
-          'Why does my app crash on start?',
-          'Explain Flutter widgets simply',
+          'Make a part that kills players on touch',
+          'Create a coin collecting system',
+          'Why do I get "attempt to index nil"?',
+          'Add a simple shop GUI',
         ];
     }
   }
