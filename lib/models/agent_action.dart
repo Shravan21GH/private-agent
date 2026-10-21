@@ -18,6 +18,7 @@ class AgentAction {
   }
 
   static const List<String> availableActions = [
+    'open_camera',
     'open_app',
     'make_call',
     'send_sms',
