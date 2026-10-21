@@ -5,7 +5,15 @@ import '../models/chat_message.dart';
 class MessageBubble extends StatelessWidget {
   final ChatMessage message;
 
-  const MessageBubble({super.key, required this.message});
+  /// True while this answer is still being typed out. Text selection is
+  /// switched off during that time because it makes live typing slow.
+  final bool streaming;
+
+  const MessageBubble({
+    super.key,
+    required this.message,
+    this.streaming = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -40,13 +48,6 @@ class MessageBubble extends StatelessWidget {
                   color: Theme.of(context).colorScheme.onSurface.withOpacity(0.08),
                   width: 1.2,
                 ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(Theme.of(context).brightness == Brightness.dark ? 0.15 : 0.02),
-              blurRadius: 8,
-              offset: const Offset(0, 3),
-            ),
-          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -109,7 +110,7 @@ class MessageBubble extends StatelessWidget {
             else
               MarkdownBody(
                 data: message.content,
-                selectable: true,
+                selectable: !streaming,
                 styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
                   p: TextStyle(
                     color: Theme.of(context).colorScheme.onSurface,
