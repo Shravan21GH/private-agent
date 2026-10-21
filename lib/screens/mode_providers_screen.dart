@@ -5,13 +5,19 @@ import '../services/ai_service.dart';
 /// Lets each Zax mode (Normal, Study, Code) have its own AI provider, key and
 /// model. Changing one mode never changes another. A mode with nothing saved
 /// here simply uses the main provider from Settings.
-class ModeProvidersScreen extends StatelessWidget {
+class ModeProvidersScreen extends StatefulWidget {
   final AiService aiService;
 
   const ModeProvidersScreen({super.key, required this.aiService});
 
   @override
+  State<ModeProvidersScreen> createState() => _ModeProvidersScreenState();
+}
+
+class _ModeProvidersScreenState extends State<ModeProvidersScreen> {
+  @override
   Widget build(BuildContext context) {
+    final aiService = widget.aiService;
     return Scaffold(
       appBar: AppBar(title: const Text('Mode Providers')),
       body: ListView(
@@ -19,43 +25,64 @@ class ModeProvidersScreen extends StatelessWidget {
         children: [
           const Text(
             'Each mode can use its own AI provider. A mode with nothing saved '
-            'here uses the main provider from Settings. If a provider fails '
-            '(for example a free limit is reached), Zax shows the real error '
-            'and never switches to another provider by itself.',
+            'here uses the main provider from Settings. Configure up to four providers per mode. Zax tries them in order and falls back when a request fails before a response begins streaming, then tries the main Settings provider.',
           ),
-          const SizedBox(height: 16),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.normal,
-            presetLabel: 'Groq',
-            presetBaseUrl: 'https://api.groq.com/openai/v1',
-            presetModel: '',
-            help: 'Everyday chat. Leave empty to keep using the main provider.',
+          const SizedBox(height: 12),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Use relevant previous chats as context'),
+            subtitle: const Text('Off by default. When enabled, matching excerpts from your local chat history may be sent to the configured AI provider with your message.'),
+            value: aiService.useChatHistoryContext,
+            onChanged: (value) async {
+              await aiService.setUseChatHistoryContext(value);
+              if (mounted) setState(() {});
+            },
           ),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.study,
-            presetLabel: 'Gemini',
-            presetBaseUrl:
-                'https://generativelanguage.googleapis.com/v1beta/openai',
-            presetModel: '',
-            help: 'School explanations. Paste your Gemini key, then tap '
-                '"Fetch models" and pick one.',
+          const SizedBox(height: 12),
+          for (final mode in [ZaxMode.normal, ZaxMode.study, ZaxMode.programming]) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 4),
+              child: Text('${mode.label} mode — 4 provider slots',
+                  style: Theme.of(context).textTheme.titleMedium),
+            ),
+            for (var slot = 1; slot <= AiService.providersPerMode; slot++)
+              _ModeProviderCard(
+                key: ValueKey('${mode.name}_$slot'),
+                aiService: aiService,
+                mode: mode,
+                slot: slot,
+                presetLabel: mode == ZaxMode.normal ? 'Groq' : mode == ZaxMode.study ? 'Gemini' : 'OpenRouter',
+                presetBaseUrl: mode == ZaxMode.normal
+                    ? 'https://api.groq.com/openai/v1'
+                    : mode == ZaxMode.study
+                        ? 'https://generativelanguage.googleapis.com/v1beta/openai'
+                        : 'https://openrouter.ai/api/v1',
+                presetModel: mode == ZaxMode.programming && slot == 1
+                    ? 'cohere/north-mini-code:free' : '',
+                help: slot == 1
+                    ? 'Primary provider. This slot is used first when configured.'
+                    : 'Optional backup provider slot. Configure it independently.',
+              ),
+          ],
+          Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 4),
+            child: Text('Agent mode — 4 provider slots', style: Theme.of(context).textTheme.titleMedium),
           ),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.programming,
-            presetLabel: 'OpenRouter free',
-            presetBaseUrl: 'https://openrouter.ai/api/v1',
-            presetModel: 'cohere/north-mini-code:free',
-            help: 'Roblox / Luau coding. Paste your OpenRouter key. Keep the '
-                'model ending in ":free" so you are never charged.',
-          ),
+          for (var slot = 1; slot <= AiService.providersPerMode; slot++)
+            _ModeProviderCard(
+              key: ValueKey('agent_$slot'),
+              aiService: aiService,
+              mode: ZaxMode.normal,
+              modeKey: 'agent',
+              modeLabel: 'Agent',
+              slot: slot,
+              presetLabel: 'Groq',
+              presetBaseUrl: 'https://api.groq.com/openai/v1',
+              presetModel: '',
+              help: slot == 1 ? 'Primary provider for phone actions and multi-step tasks.' : 'Fallback provider ${slot}; tried if earlier providers fail before streaming.',
+            ),
           const SizedBox(height: 8),
-          const Text(
-            'Image mode uses Pollinations and has no key here. Phone-control '
-            '(Agent) tasks always use the main provider.',
-          ),
+          const Text('Image generation uses its existing image service. The main provider in Settings remains the final fallback.'),
         ],
       ),
     );
@@ -65,6 +92,9 @@ class ModeProvidersScreen extends StatelessWidget {
 class _ModeProviderCard extends StatefulWidget {
   final AiService aiService;
   final ZaxMode mode;
+  final String? modeKey;
+  final String? modeLabel;
+  final int slot;
   final String presetLabel;
   final String presetBaseUrl;
   final String presetModel;
@@ -73,6 +103,9 @@ class _ModeProviderCard extends StatefulWidget {
   const _ModeProviderCard({
     required this.aiService,
     required this.mode,
+    this.modeKey,
+    this.modeLabel,
+    required this.slot,
     required this.presetLabel,
     required this.presetBaseUrl,
     required this.presetModel,
@@ -95,7 +128,7 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
   @override
   void initState() {
     super.initState();
-    final saved = widget.aiService.modeProviderFor(widget.mode.name);
+    final saved = widget.aiService.modeProviderForSlot(widget.modeKey ?? widget.mode.name, widget.slot);
     _keyController = TextEditingController(text: saved?.apiKey ?? '');
     _urlController = TextEditingController(text: saved?.baseUrl ?? '');
     _modelController = TextEditingController(text: saved?.model ?? '');
@@ -186,30 +219,31 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
       return;
     }
     await widget.aiService.saveModeProvider(
-      widget.mode.name,
+      widget.modeKey ?? widget.mode.name,
       apiKey: key,
       baseUrl: url,
       model: model,
+      slot: widget.slot,
     );
-    _setStatus('Saved. This mode will now use $model. (Not tested yet.)');
+    _setStatus('Saved provider ${widget.slot}. It will be tried in fallback order; use Fetch models to test the key.');
   }
 
   Future<void> _useMain() async {
-    await widget.aiService.clearModeProvider(widget.mode.name);
+    await widget.aiService.clearModeProvider(widget.modeKey ?? widget.mode.name, slot: widget.slot);
     if (!mounted) return;
     setState(() {
       _keyController.clear();
       _urlController.clear();
       _modelController.clear();
     });
-    _setStatus('This mode now uses the main provider.');
+    _setStatus('Provider ${widget.slot} cleared.');
   }
 
   @override
   Widget build(BuildContext context) {
     final errorColor = Theme.of(context).colorScheme.error;
     return Card(
-      margin: const EdgeInsets.only(bottom: 16),
+      margin: const EdgeInsets.only(bottom: 10),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -220,7 +254,7 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
                 Icon(widget.mode.icon, color: widget.mode.color),
                 const SizedBox(width: 8),
                 Text(
-                  '${widget.mode.label} mode',
+                  '${widget.modeLabel ?? widget.mode.label} mode',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,

@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/chat_message.dart';
+import '../models/agent_action.dart';
 import '../services/ai_service.dart';
 import '../services/action_handler.dart';
 import '../services/voice_service.dart';
@@ -19,6 +20,12 @@ import '../main.dart';
 import '../config/feature_flags.dart';
 import '../config/zax_mode.dart';
 import '../widgets/zax_core.dart';
+import 'memory_screen.dart';
+import 'tasks_screen.dart';
+import 'notes_screen.dart';
+import 'files_screen.dart';
+import 'mode_providers_screen.dart';
+import '../services/memory_store.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -103,7 +110,63 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
 
+    // Explicit memory commands are handled locally so they never depend on a
+    // model deciding whether to save something. Sensitive items still require
+    // the memory store's confirmation rules.
+    final trimmed = text.trim();
+    final lower = trimmed.toLowerCase();
+    final rememberAnyway = lower.startsWith('remember anyway:');
+    final remember = rememberAnyway || lower.startsWith('remember:') || lower.startsWith('remember that:');
+    if (remember) {
+      final colon = trimmed.indexOf(':');
+      final memoryText = colon >= 0 ? trimmed.substring(colon + 1).trim() : '';
+      final result = await MemoryStore.instance.remember(memoryText, confirmedSensitive: rememberAnyway);
+      if (!mounted) return;
+      setState(() {
+        _messages.add(ChatMessage(role: 'user', content: trimmed));
+        _messages.add(ChatMessage(role: 'assistant', content: result.message));
+      });
+      _textController.clear();
+      await _saveSession();
+      _scrollToBottom();
+      return;
+    }
+
+    // Fast path: opening one app is deterministic and should not wait for an
+    // LLM round-trip. Multi-step requests deliberately continue to the Agent.
+    final openAppMatch = RegExp(r'^(?:please\s+)?(?:open|launch|start)\s+([a-zA-Z0-9 ._+\-]+)[.!?]*$', caseSensitive: false).firstMatch(text.trim());
+    if (_mode == 'agent' && openAppMatch != null && !text.toLowerCase().contains(' and ')) {
+      final appName = openAppMatch.group(1)!.trim();
+      setState(() {
+        _messages.add(ChatMessage(role: 'user', content: text.trim()));
+        _isLoading = true;
+      });
+      _textController.clear();
+      _scrollToBottom();
+      try {
+        final result = await _actionHandler.execute(
+          AgentAction(action: 'open_app', params: {'app_name': appName}, response: 'Opening $appName.'),
+          aiService: _aiService,
+        );
+        if (!mounted) return;
+        setState(() {
+          _messages.add(ChatMessage(role: 'assistant', content: result.details ?? (result.success ? 'Done.' : 'The action could not be completed.')));
+          _isLoading = false;
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _messages.add(ChatMessage(role: 'assistant', content: 'I could not open $appName: $e'));
+          _isLoading = false;
+        });
+      }
+      await _saveSession();
+      _scrollToBottom();
+      return;
+    }
+
     // Tell the AI which Zax mode is active (only affects normal chat replies)
+    _aiService.activeMode = _zaxMode.name;
     _aiService.modeInstruction = _zaxMode.instruction;
 
     // Image mode: make a picture instead of asking the AI for text
@@ -145,19 +208,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             },
           );
       String accumulated = '';
+      DateTime lastPaint = DateTime.fromMillisecondsSinceEpoch(0);
+
+      // Redraw the growing answer at most ~12 times a second instead of for
+      // every single word. This is what keeps the screen smooth.
+      void paintAnswer() {
+        if (!mounted) return;
+        setState(() {
+          _messages[assistantIndex] = ChatMessage(
+            role: 'assistant',
+            content: accumulated,
+            timestamp: assistantMessage.timestamp,
+          );
+        });
+        _scrollToBottom();
+        lastPaint = DateTime.now();
+      }
 
       await for (final chunk in stream) {
         accumulated += chunk;
-        if (mounted) {
-          setState(() {
-            _messages[assistantIndex] = ChatMessage(
-              role: 'assistant',
-              content: accumulated,
-            );
-          });
-          _scrollToBottom();
+        if (DateTime.now().difference(lastPaint).inMilliseconds >= 80) {
+          paintAnswer();
         }
       }
+      paintAnswer();
       await _saveSession();
 
       // Check if it's an action
@@ -325,14 +399,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  bool _scrollPending = false;
+
   void _scrollToBottom() {
+    if (_scrollPending) return;
+    _scrollPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollPending = false;
       if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
     });
   }
@@ -588,13 +663,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           // Background mesh glows
           _buildBackgroundGlows(isDark),
 
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 100, sigmaY: 100),
-              child: Container(color: Colors.transparent),
-            ),
-          ),
-
           Column(
             children: [
               // Glowing Zax core + the 4 modes
@@ -673,7 +741,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ),
                         itemCount: _messages.length,
                         itemBuilder: (context, index) {
-                          return MessageBubble(message: _messages[index]);
+                          final streaming =
+                              _isLoading && index == _messages.length - 1;
+                          return RepaintBoundary(
+                            child: MessageBubble(
+                              message: _messages[index],
+                              streaming: streaming,
+                            ),
+                          );
                         },
                       ),
               ),
@@ -977,6 +1052,36 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
           ListTile(
             horizontalTitleGap: 8,
+            leading: Icon(Icons.checklist_rounded, color: isDark ? Colors.grey[400] : Colors.grey[600], size: 20),
+            title: Text('Tasks & Reminders', style: textStyle),
+            onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const TasksScreen())); },
+          ),
+          ListTile(
+            horizontalTitleGap: 8,
+            leading: Icon(Icons.sticky_note_2_outlined, color: isDark ? Colors.grey[400] : Colors.grey[600], size: 20),
+            title: Text('Notes', style: textStyle),
+            onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const NotesScreen())); },
+          ),
+          ListTile(
+            horizontalTitleGap: 8,
+            leading: Icon(Icons.folder_open_rounded, color: isDark ? Colors.grey[400] : Colors.grey[600], size: 20),
+            title: Text('Files & Code', style: textStyle),
+            onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const FilesScreen())); },
+          ),
+          ListTile(
+            horizontalTitleGap: 8,
+            leading: Icon(Icons.psychology_alt_rounded, color: isDark ? Colors.grey[400] : Colors.grey[600], size: 20),
+            title: Text('Memory', style: textStyle),
+            onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => const MemoryScreen())); },
+          ),
+          ListTile(
+            horizontalTitleGap: 8,
+            leading: Icon(Icons.hub_rounded, color: isDark ? Colors.grey[400] : Colors.grey[600], size: 20),
+            title: Text('AI Providers', style: textStyle),
+            onTap: () { Navigator.pop(context); Navigator.push(context, MaterialPageRoute(builder: (_) => ModeProvidersScreen(aiService: _aiService))); },
+          ),
+          ListTile(
+            horizontalTitleGap: 8,
             leading: Icon(
               Icons.settings_rounded,
               color: isDark ? Colors.grey[400] : Colors.grey[600],
@@ -1081,6 +1186,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: ZaxCore(
           color: _zaxMode.color,
           active: _isLoading || _isListening,
+          lite: compact,
         ),
       ),
     );
