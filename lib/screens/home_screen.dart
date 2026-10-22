@@ -12,6 +12,13 @@ import '../widgets/message_bubble.dart';
 import '../services/telegram_service.dart';
 import '../services/chat_history_service.dart';
 import '../services/notification_service.dart';
+import '../services/auto_memory.dart';
+import '../services/chat_recall.dart';
+import '../services/zax_fast_router.dart';
+import 'memory_screen.dart';
+import 'mode_providers_screen.dart';
+import 'notes_screen.dart';
+import 'tasks_screen.dart';
 import 'settings_screen.dart';
 import 'task_history_screen.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
@@ -35,6 +42,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final VoiceService _voiceService = VoiceService();
   final NotificationService _notificationService = NotificationService();
   late final TelegramService _telegramService;
+  late final ZaxFastRouter _fastRouter;
 
   final List<ChatMessage> _messages = [];
   bool _isLoading = false;
@@ -58,6 +66,33 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _telegramService = TelegramService(_actionHandler, _aiService);
+    _fastRouter = ZaxFastRouter(
+      actionHandler: _actionHandler,
+      aiService: _aiService,
+    );
+    // Calls, texts and emails always ask first. (Before this was connected,
+    // those actions were always cancelled because nothing could say "yes".)
+    _actionHandler.confirmAction = (title, message) async {
+      if (!mounted) return false;
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Yes, do it'),
+            ),
+          ],
+        ),
+      );
+      return approved ?? false;
+    };
     _initServices();
     _startOverlayHistorySync();
     // Register as the handler for overlay bubble tasks
@@ -100,17 +135,77 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await ChatHistoryService.saveSession(session);
   }
 
+  void _showStatus(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+      );
+  }
+
+  Future<void> _autoRemember(String text) async {
+    final saved = await AutoMemory.maybeSave(text);
+    if (saved != null) _showStatus('🧠 Remembered: $saved');
+  }
+
+  /// Clear commands (open an app, timers, notes, tasks, camera, ...) are done
+  /// on the phone straight away without waiting for the AI. Returns true when
+  /// the message was handled here.
+  Future<bool> _tryFastCommand(String text) async {
+    FastReply? reply;
+    setState(() => _isLoading = true);
+    try {
+      reply = await _fastRouter.tryHandle(text, onStatus: _showStatus);
+    } catch (e) {
+      reply = FastReply(
+        'Something went wrong: ${e.toString().replaceFirst('Exception: ', '')}',
+      );
+    }
+    if (reply == null) {
+      if (mounted) setState(() => _isLoading = false);
+      return false;
+    }
+    if (!mounted) return true;
+    final image = reply.imagePath;
+    final shown = image == null
+        ? reply.text
+        : '![photo](${Uri.file(image)})\n\n${reply.text}';
+    setState(() {
+      _messages.add(ChatMessage(role: 'user', content: text));
+      _messages.add(ChatMessage(role: 'assistant', content: shown));
+      _isLoading = false;
+    });
+    _textController.clear();
+    _scrollToBottom();
+    _aiService.addHistoryMessage('user', text);
+    _aiService.addHistoryMessage('assistant', reply.text);
+    await _saveSession();
+    ChatRecall.refresh();
+    if (_zaxMode != ZaxMode.programming && reply.text.length <= 300) {
+      _voiceService.speak(reply.text);
+    }
+    return true;
+  }
+
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
 
     // Tell the AI which Zax mode is active (only affects normal chat replies)
     _aiService.modeInstruction = _zaxMode.instruction;
+    // Choose that mode's own providers, and tell chat recall which chat is open
+    _aiService.activeMode = _zaxMode.name;
+    ChatRecall.currentSessionId = _sessionId;
 
     // Image mode: make a picture instead of asking the AI for text
     if (_zaxMode == ZaxMode.image && _mode == 'chat') {
       await _generateImage(text.trim());
       return;
     }
+
+    // Instant commands first: no waiting for the AI.
+    if (await _tryFastCommand(text.trim())) return;
+    if (_mode == 'chat') unawaited(_autoRemember(text.trim()));
 
     final userMessage = ChatMessage(role: 'user', content: text.trim());
     setState(() {
@@ -145,20 +240,35 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             },
           );
       String accumulated = '';
+      DateTime lastPaint = DateTime.fromMillisecondsSinceEpoch(0);
+
+      // Redraw the growing answer at most ~12 times a second instead of for
+      // every single word. This is what keeps the screen smooth.
+      void paintAnswer() {
+        if (!mounted) return;
+        setState(() {
+          _messages[assistantIndex] = ChatMessage(
+            role: 'assistant',
+            content: accumulated,
+            timestamp: assistantMessage.timestamp,
+          );
+        });
+        _scrollToBottom();
+        lastPaint = DateTime.now();
+      }
 
       await for (final chunk in stream) {
         accumulated += chunk;
-        if (mounted) {
-          setState(() {
-            _messages[assistantIndex] = ChatMessage(
-              role: 'assistant',
-              content: accumulated,
-            );
-          });
-          _scrollToBottom();
+        if (DateTime.now().difference(lastPaint).inMilliseconds >= 80) {
+          paintAnswer();
         }
       }
+      paintAnswer();
       await _saveSession();
+      ChatRecall.refresh();
+      if (_aiService.fallbackNote.isNotEmpty) {
+        _showStatus(_aiService.fallbackNote);
+      }
 
       // Check if it's an action
       final action = _aiService.parseAction(accumulated);
@@ -325,14 +435,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  bool _scrollPending = false;
+
   void _scrollToBottom() {
+    if (_scrollPending) return;
+    _scrollPending = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollPending = false;
       if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
     });
   }
@@ -588,13 +699,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           // Background mesh glows
           _buildBackgroundGlows(isDark),
 
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 100, sigmaY: 100),
-              child: Container(color: Colors.transparent),
-            ),
-          ),
-
           Column(
             children: [
               // Glowing Zax core + the 4 modes
@@ -673,7 +777,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ),
                         itemCount: _messages.length,
                         itemBuilder: (context, index) {
-                          return MessageBubble(message: _messages[index]);
+                          final streaming =
+                              _isLoading && index == _messages.length - 1;
+                          return RepaintBoundary(
+                            child: MessageBubble(
+                              message: _messages[index],
+                              streaming: streaming,
+                            ),
+                          );
                         },
                       ),
               ),
@@ -975,6 +1086,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               );
             },
           ),
+          for (final item in <(IconData, String, Widget Function())>[
+            (Icons.checklist_rounded, 'Tasks & Reminders', () => const TasksScreen()),
+            (Icons.psychology_alt_rounded, 'Memory', () => const MemoryScreen()),
+            (Icons.sticky_note_2_outlined, 'Notes & Files', () => const NotesScreen()),
+            (
+              Icons.hub_rounded,
+              'Mode Providers (4 per mode)',
+              () => ModeProvidersScreen(aiService: _aiService),
+            ),
+          ])
+            ListTile(
+              horizontalTitleGap: 8,
+              leading: Icon(
+                item.$1,
+                color: isDark ? Colors.grey[400] : Colors.grey[600],
+                size: 20,
+              ),
+              title: Text(item.$2, style: textStyle),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => item.$3()),
+                );
+              },
+            ),
           ListTile(
             horizontalTitleGap: 8,
             leading: Icon(
@@ -1081,6 +1218,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: ZaxCore(
           color: _zaxMode.color,
           active: _isLoading || _isListening,
+          lite: compact,
         ),
       ),
     );
@@ -1251,13 +1389,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final time = DateTime.now();
     String timeGreeting = 'Hello';
     if (time.hour >= 5 && time.hour < 12) {
-      timeGreeting = 'Hello, good morning.';
+      timeGreeting = 'Good morning. Zax is online.';
     } else if (time.hour >= 12 && time.hour < 17) {
-      timeGreeting = 'Hello, good afternoon.';
+      timeGreeting = 'Good afternoon. Zax is online.';
     } else if (time.hour >= 17 && time.hour < 22) {
-      timeGreeting = 'Hello, good evening.';
+      timeGreeting = 'Good evening. Zax is online.';
     } else {
-      timeGreeting = 'Hello.';
+      timeGreeting = 'Still up? Zax is online.';
     }
 
     final suggestions = _mode == 'chat'

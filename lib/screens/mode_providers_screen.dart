@@ -18,48 +18,115 @@ class ModeProvidersScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           const Text(
-            'Each mode can use its own AI provider. A mode with nothing saved '
-            'here uses the main provider from Settings. If a provider fails '
-            '(for example a free limit is reached), Zax shows the real error '
-            'and never switches to another provider by itself.',
+            'Each mode can have up to 4 AI providers. Zax tries Provider 1 '
+            'first. If it fails (for example a free limit is reached), Zax '
+            'automatically tries Provider 2, then 3, then 4, and tells you '
+            'which one answered. A mode with nothing saved uses the main '
+            'provider from Settings. Use free providers and free models only.',
           ),
           const SizedBox(height: 16),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.normal,
-            presetLabel: 'Groq',
-            presetBaseUrl: 'https://api.groq.com/openai/v1',
-            presetModel: '',
-            help: 'Everyday chat. Leave empty to keep using the main provider.',
-          ),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.study,
-            presetLabel: 'Gemini',
-            presetBaseUrl:
-                'https://generativelanguage.googleapis.com/v1beta/openai',
-            presetModel: '',
-            help: 'School explanations. Paste your Gemini key, then tap '
-                '"Fetch models" and pick one.',
-          ),
-          _ModeProviderCard(
-            aiService: aiService,
-            mode: ZaxMode.programming,
-            presetLabel: 'OpenRouter free',
-            presetBaseUrl: 'https://openrouter.ai/api/v1',
-            presetModel: 'cohere/north-mini-code:free',
-            help: 'Roblox / Luau coding. Paste your OpenRouter key. Keep the '
-                'model ending in ":free" so you are never charged.',
-          ),
+          for (final spec in _specs) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 8),
+              child: Row(
+                children: [
+                  Icon(spec.mode.icon, color: spec.mode.color),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${spec.mode.label} mode',
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(spec.help, style: const TextStyle(fontSize: 12)),
+            ),
+            for (int slot = 1; slot <= AiService.providerSlots; slot++)
+              _ModeProviderCard(
+                key: ValueKey('${spec.mode.name}_$slot'),
+                aiService: aiService,
+                mode: spec.mode,
+                slot: slot,
+                presetLabel: spec.presetLabel,
+                presetBaseUrl: spec.presetBaseUrl,
+                presetModel: spec.presetModel,
+              ),
+          ],
           const SizedBox(height: 8),
           const Text(
             'Image mode uses Pollinations and has no key here. Phone-control '
-            '(Agent) tasks always use the main provider.',
+            '(Agent) tasks always use the main provider. Photos you take with '
+            'the camera go to your Normal-mode providers (Groq and Gemini can '
+            'look at pictures).',
           ),
         ],
       ),
     );
   }
+}
+
+class _ModeSpec {
+  final ZaxMode mode;
+  final String presetLabel;
+  final String presetBaseUrl;
+  final String presetModel;
+  final String help;
+
+  const _ModeSpec(
+    this.mode,
+    this.presetLabel,
+    this.presetBaseUrl,
+    this.presetModel,
+    this.help,
+  );
+}
+
+const List<_ModeSpec> _specs = [
+  _ModeSpec(
+    ZaxMode.normal,
+    'Groq',
+    'https://api.groq.com/openai/v1',
+    '',
+    'Everyday chat. Suggested: Provider 1 = Groq.',
+  ),
+  _ModeSpec(
+    ZaxMode.study,
+    'Gemini',
+    'https://generativelanguage.googleapis.com/v1beta/openai',
+    '',
+    'School explanations. Suggested: Provider 1 = Gemini. Paste your key, '
+        'then tap "Fetch models" and pick one.',
+  ),
+  _ModeSpec(
+    ZaxMode.programming,
+    'OpenRouter free',
+    'https://openrouter.ai/api/v1',
+    'cohere/north-mini-code:free',
+    'Roblox / Luau coding. Suggested: Provider 1 = OpenRouter. Keep a model '
+        'ending in ":free" so you are never charged.',
+  ),
+];
+
+/// Quick-fill buttons: the mode's own suggestion first, then other common
+/// OpenAI-compatible providers that have a free tier.
+List<(String, String, String)> _presets(String label, String url, String model) {
+  final list = <(String, String, String)>[(label, url, model)];
+  const others = <(String, String)>[
+    ('Groq', 'https://api.groq.com/openai/v1'),
+    ('Gemini', 'https://generativelanguage.googleapis.com/v1beta/openai'),
+    ('OpenRouter', 'https://openrouter.ai/api/v1'),
+    ('Cerebras', 'https://api.cerebras.ai/v1'),
+    ('NVIDIA', 'https://integrate.api.nvidia.com/v1'),
+  ];
+  for (final o in others) {
+    if (o.$2 != url) list.add((o.$1, o.$2, ''));
+  }
+  return list;
 }
 
 class _ModeProviderCard extends StatefulWidget {
@@ -68,15 +135,16 @@ class _ModeProviderCard extends StatefulWidget {
   final String presetLabel;
   final String presetBaseUrl;
   final String presetModel;
-  final String help;
+  final int slot;
 
   const _ModeProviderCard({
+    super.key,
     required this.aiService,
     required this.mode,
+    required this.slot,
     required this.presetLabel,
     required this.presetBaseUrl,
     required this.presetModel,
-    required this.help,
   });
 
   @override
@@ -95,7 +163,7 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
   @override
   void initState() {
     super.initState();
-    final saved = widget.aiService.modeProviderFor(widget.mode.name);
+    final saved = widget.aiService.modeProviderFor(_slotId);
     _keyController = TextEditingController(text: saved?.apiKey ?? '');
     _urlController = TextEditingController(text: saved?.baseUrl ?? '');
     _modelController = TextEditingController(text: saved?.model ?? '');
@@ -109,6 +177,8 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
     super.dispose();
   }
 
+  String get _slotId => AiService.slotKey(widget.mode.name, widget.slot);
+
   String _cleanUrl(String url) => url.trim().replaceAll(RegExp(r'/+$'), '');
 
   void _setStatus(String message, {bool error = false}) {
@@ -119,11 +189,11 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
     });
   }
 
-  void _applyPreset() {
+  void _applyPreset(String url, String model) {
     setState(() {
-      _urlController.text = widget.presetBaseUrl;
-      if (widget.presetModel.isNotEmpty) {
-        _modelController.text = widget.presetModel;
+      _urlController.text = url;
+      if (model.isNotEmpty) {
+        _modelController.text = model;
       }
       _status = null;
     });
@@ -186,23 +256,26 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
       return;
     }
     await widget.aiService.saveModeProvider(
-      widget.mode.name,
+      _slotId,
       apiKey: key,
       baseUrl: url,
       model: model,
     );
-    _setStatus('Saved. This mode will now use $model. (Not tested yet.)');
+    _setStatus(
+      'Saved as Provider ${widget.slot}. Zax will use $model for '
+      '${widget.mode.label} mode. (Not tested yet.)',
+    );
   }
 
   Future<void> _useMain() async {
-    await widget.aiService.clearModeProvider(widget.mode.name);
+    await widget.aiService.clearModeProvider(_slotId);
     if (!mounted) return;
     setState(() {
       _keyController.clear();
       _urlController.clear();
       _modelController.clear();
     });
-    _setStatus('This mode now uses the main provider.');
+    _setStatus('Provider ${widget.slot} is now empty.');
   }
 
   @override
@@ -215,21 +288,12 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Icon(widget.mode.icon, color: widget.mode.color),
-                const SizedBox(width: 8),
-                Text(
-                  '${widget.mode.label} mode',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
+            Text(
+              widget.slot == 1
+                  ? 'Provider 1 (tried first)'
+                  : 'Provider ${widget.slot} (backup ${widget.slot - 1})',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height: 6),
-            Text(widget.help, style: const TextStyle(fontSize: 12)),
             const SizedBox(height: 12),
             TextField(
               controller: _keyController,
@@ -259,10 +323,15 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
             Wrap(
               spacing: 8,
               children: [
-                ActionChip(
-                  label: Text(widget.presetLabel),
-                  onPressed: _applyPreset,
-                ),
+                for (final p in _presets(
+                  widget.presetLabel,
+                  widget.presetBaseUrl,
+                  widget.presetModel,
+                ))
+                  ActionChip(
+                    label: Text(p.$1),
+                    onPressed: () => _applyPreset(p.$2, p.$3),
+                  ),
               ],
             ),
             const SizedBox(height: 6),
@@ -286,7 +355,7 @@ class _ModeProviderCardState extends State<_ModeProviderCard> {
                 FilledButton(onPressed: _save, child: const Text('Save')),
                 TextButton(
                   onPressed: _useMain,
-                  child: const Text('Use main provider'),
+                  child: const Text('Clear this provider'),
                 ),
               ],
             ),
