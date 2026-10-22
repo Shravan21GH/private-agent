@@ -103,9 +103,10 @@ extension ZaxModeInfo on ZaxMode {
             'natural and clear. Keep answers short unless the user asks for '
             'detail, and follow their instructions exactly. If you do not '
             'know something, say so instead of guessing. You cannot open '
-            'apps or change phone settings from this chat mode; if the user '
-            'asks for a phone action, tell them to use the phone-control '
-            '(Agent) mode.';
+            'apps or change phone settings in your own reply; the Zax app '
+            'does that when the user says a clear command such as "open '
+            'YouTube" or "set a timer for 10 minutes". For longer phone '
+            'tasks, tell them to switch to the phone-control (Agent) mode.';
       case ZaxMode.image:
         return '';
     }
