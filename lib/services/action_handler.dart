@@ -1,4 +1,3 @@
-import 'package:android_intent_plus/android_intent.dart';
 import '../models/agent_action.dart';
 import '../models/chat_message.dart';
 import 'app_launcher_service.dart';
@@ -34,6 +33,7 @@ class ActionHandler {
   Future<bool> Function(String title, String message)? confirmAction;
 
   ShizukuService get shizuku => _shizuku;
+  AppLauncherService get launcher => _appLauncher;
   ScreenAutomationService get screenAutomation => _screenAutomation;
 
   TaskExecutor? _currentExecutor;
@@ -75,11 +75,6 @@ class ActionHandler {
       String result;
 
       switch (action.action) {
-        case 'open_camera':
-          await const AndroidIntent(action: 'android.media.action.IMAGE_CAPTURE').launch();
-          result = 'Opened the camera app. Capture and review the photo there; Zax does not receive the image automatically.';
-          break;
-
         case 'open_app':
           result = await _appLauncher.openApp(
             action.params['app_name'] as String? ?? '',
@@ -255,9 +250,6 @@ class ActionHandler {
     }
 
     switch (action.action) {
-      case 'open_camera':
-        return null;
-
       case 'open_app':
         return text('app_name').isEmpty
             ? 'Which app should I open?'
