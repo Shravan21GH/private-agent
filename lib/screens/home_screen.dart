@@ -36,7 +36,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final List<ChatMessage> _messages = [];
   final List<PendingAttachment> _pendingAttachments = [];
+  final List<String> _quickPrompts = const [
+    'Explain this simply',
+    'Summarize it for me',
+    'Draft a quick reply',
+    'Give me the short answer',
+    'What should I do next?',
+  ];
   bool _isLoading = false;
+  bool _companionMode = true;
   String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
   String _sessionTitle = 'New chat';
 
@@ -139,6 +147,15 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
       }
+    });
+  }
+
+  void _applyQuickPrompt(String prompt) {
+    setState(() {
+      _textController.text = prompt;
+      _textController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _textController.text.length),
+      );
     });
   }
 
@@ -259,6 +276,26 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildQuickActions() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: _quickPrompts
+            .map(
+              (prompt) => ActionChip(
+                backgroundColor: const Color(0xFF111827),
+                label: Text(prompt, style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
+                avatar: const Icon(Icons.auto_awesome_rounded, size: 14, color: Color(0xFF8B5CF6)),
+                onPressed: () => _applyQuickPrompt(prompt),
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+
   Widget _buildInputBar() {
     return SafeArea(
       child: Container(
@@ -344,6 +381,15 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(
+            onPressed: () {
+              setState(() {
+                _companionMode = !_companionMode;
+              });
+            },
+            icon: Icon(_companionMode ? Icons.favorite_rounded : Icons.favorite_border_rounded),
+            tooltip: 'Friend mode',
+          ),
+          IconButton(
             onPressed: () async {
               final session = ChatSession(
                 id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -392,14 +438,23 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    _isLoading ? 'Thinking and helping...' : 'Online and ready to help',
+                    _isLoading ? 'Thinking and helping...' : (_companionMode ? 'Friend mode is on and ready' : 'Jarvis mode is on'),
                     style: const TextStyle(color: Colors.white70, fontSize: 12.5),
                   ),
                 ),
-                const Text('FRIEND MODE', style: TextStyle(color: Color(0xFF8B5CF6), fontSize: 10, letterSpacing: 1.2, fontWeight: FontWeight.w700)),
+                Text(
+                  _companionMode ? 'FRIEND MODE' : 'JARVIS MODE',
+                  style: const TextStyle(
+                    color: Color(0xFF8B5CF6),
+                    fontSize: 10,
+                    letterSpacing: 1.2,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ],
             ),
           ),
+          _buildQuickActions(),
           Expanded(
             child: _messages.isEmpty
                 ? Center(
