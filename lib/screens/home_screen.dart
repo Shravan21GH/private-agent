@@ -42,15 +42,50 @@ class _HomeScreenState extends State<HomeScreen> {
     'Draft a quick reply',
     'Give me the short answer',
     'What should I do next?',
+    'Summarize this email',
   ];
   bool _isLoading = false;
   bool _companionMode = true;
   String _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
   String _sessionTitle = 'New chat';
 
+  String get _activeCompanionPrompt {
+    if (_companionMode) {
+      return '''
+You are Zax, a fast, warm, natural companion assistant. Speak like a smart friend, not a robot.
+
+Rules:
+- Answer direct and naturally. Use a friendly, human tone.
+- Give the short answer first, then a useful follow-up if it helps.
+- If user asks about a concept, explain it in simple language first, then give the technical version if needed.
+- If the user asks for email/text/message drafts, write them naturally and casually.
+- If they share a file, photo, or text, summarize or interpret it practically.
+- If something is unclear, say so gently and ask one useful follow-up question when it helps.
+- Do not sound stiff, cold, or robotic.
+''';
+    }
+
+    return '''
+You are Zax in Jarvis-style mode. Stay calm, premium, and highly efficient.
+
+Rules:
+- Give a crisp, useful answer first.
+- Keep it polished, confident, and proactive.
+- When the user asks for help, present the best next step clearly.
+- For messages, emails, or summaries, produce clean and strong wording.
+- For technical concepts, explain the important idea fast and give clear context.
+- Maintain a futuristic assistant feel without being cold or over-the-top.
+''';
+  }
+
+  void _applyCompanionMode() {
+    _aiService.modeInstruction = _activeCompanionPrompt;
+  }
+
   @override
   void initState() {
     super.initState();
+    _applyCompanionMode();
     unawaited(_aiService.init());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom();
@@ -80,8 +115,9 @@ class _HomeScreenState extends State<HomeScreen> {
         (m) => m.isUser,
         orElse: () => ChatMessage(role: 'user', content: 'New chat'),
       );
-      _sessionTitle =
-          firstUser.content.length > 28 ? '${firstUser.content.substring(0, 25)}...' : firstUser.content;
+      _sessionTitle = firstUser.content.length > 28
+          ? '${firstUser.content.substring(0, 25)}...'
+          : firstUser.content;
     }
     final session = ChatSession(
       id: _sessionId,
@@ -163,6 +199,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final trimmed = text.trim();
     final hasAttachmentContext = _pendingAttachments.isNotEmpty;
     if (trimmed.isEmpty && !hasAttachmentContext) return;
+
+    _applyCompanionMode();
 
     final userMessageText = trimmed.isEmpty
         ? 'Shared ${_pendingAttachments.length} attachment${_pendingAttachments.length == 1 ? '' : 's'}.'
@@ -286,8 +324,19 @@ class _HomeScreenState extends State<HomeScreen> {
             .map(
               (prompt) => ActionChip(
                 backgroundColor: const Color(0xFF111827),
-                label: Text(prompt, style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w600)),
-                avatar: const Icon(Icons.auto_awesome_rounded, size: 14, color: Color(0xFF8B5CF6)),
+                label: Text(
+                  prompt,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                avatar: const Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 14,
+                  color: Color(0xFF8B5CF6),
+                ),
                 onPressed: () => _applyQuickPrompt(prompt),
               ),
             )
@@ -384,6 +433,7 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () {
               setState(() {
                 _companionMode = !_companionMode;
+                _applyCompanionMode();
               });
             },
             icon: Icon(_companionMode ? Icons.favorite_rounded : Icons.favorite_border_rounded),
@@ -438,7 +488,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    _isLoading ? 'Thinking and helping...' : (_companionMode ? 'Friend mode is on and ready' : 'Jarvis mode is on'),
+                    _isLoading
+                        ? 'Thinking and helping...'
+                        : (_companionMode ? 'Friend mode is on and ready' : 'Jarvis mode is on'),
                     style: const TextStyle(color: Colors.white70, fontSize: 12.5),
                   ),
                 ),
