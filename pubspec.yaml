@@ -41,7 +41,7 @@ dependencies:
 
   # Shizuku (optional)
   shizuku_api: ^1.2.2
-  share_plus: ^13.2.0
+  share_plus: ^12.0.2
   image_picker: ^1.1.2
   file_picker: ^9.0.0
   intl: ^0.20.3
